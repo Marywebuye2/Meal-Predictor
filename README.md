@@ -1,2 +1,0 @@
-# Meal-Predictor
-Meal Prediction
