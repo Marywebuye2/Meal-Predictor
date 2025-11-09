@@ -35,14 +35,18 @@ def create_time_series_features(df):
         for lag in [1, 2, 3, 7]:  # Previous day, 2 days ago, 3 days ago, same day last week
             school_data[f'lag_{lag}'] = school_data['Actual Meals Served'].shift(lag)
         
-        # Rolling statistics
-        school_data['rolling_mean_3'] = school_data['Actual Meals Served'].rolling(3, min_periods=1).mean()
-        school_data['rolling_mean_7'] = school_data['Actual Meals Served'].rolling(7, min_periods=1).mean()
-        school_data['rolling_std_7'] = school_data['Actual Meals Served'].rolling(7, min_periods=1).std()
+        # FIX 1: Fixed rolling statistics (NO DATA LEAKAGE)
+        school_data['rolling_mean_3'] = school_data['Actual Meals Served'].shift(1).rolling(3, min_periods=1).mean()
+        school_data['rolling_mean_7'] = school_data['Actual Meals Served'].shift(1).rolling(7, min_periods=1).mean()
+        school_data['rolling_std_7'] = school_data['Actual Meals Served'].shift(1).rolling(7, min_periods=1).std()
         
         # Day of week features
         school_data['day_of_week'] = school_data['Date'].dt.dayofweek
         school_data['is_weekend'] = (school_data['Date'].dt.dayofweek >= 5).astype(int)
+        
+        # FIX 2: Added simple but powerful features
+        school_data['day_of_month'] = school_data['Date'].dt.day
+        school_data['week_of_year'] = school_data['Date'].dt.isocalendar().week
         
         # Month and season
         school_data['month'] = school_data['Date'].dt.month
@@ -57,10 +61,12 @@ print("\n🔄 Creating time-series features...")
 featured_data = create_time_series_features(data)
 
 # Prepare for training
+# FIX 3: Updated feature columns
 feature_columns = [
     'lag_1', 'lag_2', 'lag_3', 'lag_7',
     'rolling_mean_3', 'rolling_mean_7', 'rolling_std_7',
-    'day_of_week', 'is_weekend', 'month', 'is_month_start', 'is_month_end'
+    'day_of_week', 'day_of_month', 'week_of_year', 'is_weekend', 
+    'month', 'is_month_start', 'is_month_end'
 ]
 
 # Add menu if available
@@ -146,12 +152,16 @@ def backtest_model(df, model, feature_columns, school_encoding, menu_encoding=No
             features['lag_3'] = school_data.iloc[i-3]['Actual Meals Served'] if i >= 3 else previous_row['Actual Meals Served']
             features['lag_7'] = school_data.iloc[i-7]['Actual Meals Served'] if i >= 7 else previous_row['Actual Meals Served']
             
-            features['rolling_mean_3'] = school_data.iloc[max(0, i-3):i]['Actual Meals Served'].mean()
-            features['rolling_mean_7'] = school_data.iloc[max(0, i-7):i]['Actual Meals Served'].mean()
-            features['rolling_std_7'] = school_data.iloc[max(0, i-7):i]['Actual Meals Served'].std()
+            # FIXED: Use only past data for rolling stats
+            past_data = school_data.iloc[max(0, i-7):i]['Actual Meals Served']
+            features['rolling_mean_3'] = past_data.tail(3).mean() if len(past_data) >= 3 else past_data.mean()
+            features['rolling_mean_7'] = past_data.tail(7).mean() if len(past_data) >= 7 else past_data.mean()
+            features['rolling_std_7'] = past_data.tail(7).std() if len(past_data) >= 7 else past_data.std()
             
             features['day_of_week'] = current_row['day_of_week']
             features['is_weekend'] = current_row['is_weekend']
+            features['day_of_month'] = current_row['day_of_month']
+            features['week_of_year'] = current_row['week_of_year']
             features['month'] = current_row['month']
             features['is_month_start'] = current_row['is_month_start']
             features['is_month_end'] = current_row['is_month_end']
