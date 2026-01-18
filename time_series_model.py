@@ -14,10 +14,17 @@ print("🚀 CREATING XGBOOST TIME-SERIES MEAL PREDICTION MODEL")
 print("=" * 60)
 
 # Load data
-# Google Sheet URL (format=csv)
-SHEET_URL = 'https://docs.google.com/spreadsheets/d/1vHnO2Zz3thN46-76j2fMMnp1W5efc9ottFLfwuOwwTY/export?format=csv'
-print(f"⬇️ Downloading data from Google Sheets...")
-data = pd.read_csv(SHEET_URL)
+# Load data
+# Read from locally downloaded file to avoid pandas network hang
+DATA_FILE = 'downloaded_data.csv'
+print(f"⬇️ Reading data from {DATA_FILE}...")
+if not os.path.exists(DATA_FILE):
+    # Fallback if file doesn't exist
+    print("Local file not found, downloading...")
+    SHEET_URL = 'https://docs.google.com/spreadsheets/d/1vHnO2Zz3thN46-76j2fMMnp1W5efc9ottFLfwuOwwTY/export?format=csv'
+    data = pd.read_csv(SHEET_URL)
+else:
+    data = pd.read_csv(DATA_FILE)
 print(f"📊 Data loaded: {len(data)} records")
 
 # Convert date and sort
