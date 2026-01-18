@@ -1,17 +1,23 @@
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor
+import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
 import joblib
 from datetime import timedelta
+import sqlite3
+import json
+from datetime import datetime, timedelta 
 import warnings
 warnings.filterwarnings('ignore')
 
-print("🚀 CREATING TIME-SERIES MEAL PREDICTION MODEL")
+print("🚀 CREATING XGBOOST TIME-SERIES MEAL PREDICTION MODEL")
 print("=" * 60)
 
 # Load data
-data = pd.read_excel('data.xlsx')
+# Google Sheet URL (format=csv)
+SHEET_URL = 'https://docs.google.com/spreadsheets/d/1vHnO2Zz3thN46-76j2fMMnp1W5efc9ottFLfwuOwwTY/export?format=csv'
+print(f"⬇️ Downloading data from Google Sheets...")
+data = pd.read_csv(SHEET_URL)
 print(f"📊 Data loaded: {len(data)} records")
 
 # Convert date and sort
@@ -96,16 +102,27 @@ y = model_data['Actual Meals Served']
 from sklearn.model_selection import train_test_split
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=False)
 
-print(f"\n🤖 Training model...")
-model = RandomForestRegressor(
-    n_estimators=200,
-    max_depth=15,
-    min_samples_split=5,
+print(f"\n🤖 Training XGBoost model...")
+
+# XGBoost model with optimized parameters for time series
+model = xgb.XGBRegressor(
+    n_estimators=1000,           # More trees for better performance
+    max_depth=8,                 # Slightly deeper trees
+    learning_rate=0.05,          # Lower learning rate for better generalization
+    subsample=0.8,               # Use 80% of data for each tree
+    colsample_bytree=0.8,        # Use 80% of features for each tree
     random_state=42,
-    n_jobs=-1
+    n_jobs=-1,
+    early_stopping_rounds=50,    # Early stopping to prevent overfitting
+    eval_metric='mae'
 )
 
-model.fit(X_train, y_train)
+# Fit with validation set for early stopping
+model.fit(
+    X_train, y_train,
+    eval_set=[(X_test, y_test)],
+    verbose=False
+)
 
 # Predictions
 train_pred = model.predict(X_train)
@@ -117,7 +134,7 @@ test_mae = mean_absolute_error(y_test, test_pred)
 train_mape = mean_absolute_percentage_error(y_train, train_pred)
 test_mape = mean_absolute_percentage_error(y_test, test_pred)
 
-print(f"\n🎯 MODEL PERFORMANCE:")
+print(f"\n🎯 XGBOOST MODEL PERFORMANCE:")
 print(f"Training MAE: {train_mae:.2f} meals ({train_mape:.1%} error)")
 print(f"Test MAE:     {test_mae:.2f} meals ({test_mape:.1%} error)")
 print(f"Average meals: {y.mean():.2f}")
@@ -213,18 +230,207 @@ model_info = {
         'test_mape': test_mape,
         'avg_meals': y.mean()
     },
-    'backtest_results': backtest_results
+    'backtest_results': backtest_results,
+    'model_type': 'xgboost'
 }
 
-joblib.dump(model, 'time_series_model.joblib')
-joblib.dump(model_info, 'time_series_model_info.joblib')
+joblib.dump(model, 'xgboost_time_series_model.joblib')
+joblib.dump(model_info, 'xgboost_time_series_model_info.joblib')
 
-print(f"\n💾 Model saved as 'time_series_model.joblib'")
-print(f"💾 Model info saved as 'time_series_model_info.joblib'")
+print(f"\n💾 Model saved as 'xgboost_time_series_model.joblib'")
+print(f"💾 Model info saved as 'xgboost_time_series_model_info.joblib'")
 
 # Show feature importance
-print(f"\n📊 FEATURE IMPORTANCE:")
+print(f"\n📊 XGBOOST FEATURE IMPORTANCE:")
 for feature, importance in sorted(model_info['feature_importance'].items(), key=lambda x: x[1], reverse=True):
     print(f"  {feature:<20}: {importance:.3f}")
 
-print(f"\n🎉 TIME-SERIES MODEL TRAINING COMPLETED!")
+print(f"\n🎉 XGBOOST TIME-SERIES MODEL TRAINING COMPLETED!")
+
+# ========== XGBOOST REAL-TIME PREDICTOR ==========
+
+class RealTimeMealPredictor:
+    """Serializable class for real-time meal predictions with XGBoost"""
+    
+    def __init__(self, model, model_info):
+        self.model = model
+        self.model_info = model_info
+        self.setup_database()
+    
+    def setup_database(self):
+        """Create database for storing meal data"""
+        conn = sqlite3.connect('meal_predictions.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS recent_meals (
+                school TEXT,
+                date DATE,
+                meals_served INTEGER,
+                menu TEXT,
+                PRIMARY KEY (school, date)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS prediction_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                school TEXT,
+                prediction_date DATE,
+                predicted_meals INTEGER,
+                actual_meals INTEGER,
+                confidence REAL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+    
+    def predict_tomorrow(self, school, today_meals, today_menu, last_week_meals=None, menu=None):
+        """Make real-time prediction for tomorrow using XGBoost"""
+        try:
+            feature_columns = self.model_info['feature_columns']
+            tomorrow = datetime.now() + timedelta(days=1)
+            
+            # Skip weekends
+            if tomorrow.weekday() >= 5:
+                return {
+                    'prediction': 0,
+                    'confidence': 0,
+                    'confidence_level': 'N/A',
+                    'data_quality': 0,
+                    'actual_data_points': 0,
+                    'timestamp': datetime.now().isoformat(),
+                    'school': school,
+                    'date': tomorrow.strftime('%Y-%m-%d'),
+                    'status': 'weekend',
+                    'message': 'No predictions for weekends'
+                }
+            
+            # Prepare features
+            features = {}
+            
+            # Core features
+            features['lag_1'] = today_meals
+            features['lag_2'] = today_meals
+            features['lag_3'] = today_meals
+            features['lag_7'] = last_week_meals if last_week_meals else today_meals
+            
+            # Rolling stats
+            features['rolling_mean_3'] = today_meals
+            features['rolling_mean_7'] = today_meals
+            features['rolling_std_7'] = today_meals * 0.1
+            
+            # Time features
+            features['day_of_week'] = tomorrow.weekday()
+            features['is_weekend'] = 0
+            features['month'] = tomorrow.month
+            features['day_of_month'] = tomorrow.day
+            features['week_of_year'] = tomorrow.isocalendar().week
+            features['is_month_start'] = 1 if tomorrow.day == 1 else 0
+            features['is_month_end'] = 1 if tomorrow.day in [28, 29, 30, 31] else 0
+            
+            # Menu and school encoding
+            menu_encoding = self.model_info.get('menu_encoding', {})
+            if menu and 'menu_encoded' in feature_columns:
+                features['menu_encoded'] = menu_encoding.get(menu, 0)
+            
+            school_encoding = self.model_info['school_encoding']
+            features['school_encoded'] = school_encoding.get(school, 0)
+            
+            # Create feature array
+            feature_array = [features.get(col, 0) for col in feature_columns]
+            
+            # Make prediction using XGBoost
+            prediction = self.model.predict([feature_array])[0]
+            prediction = max(0, round(prediction))
+            
+            # Calculate confidence based on school historical accuracy
+            confidence = 75  # Default medium
+            if 'backtest_results' in self.model_info:
+                school_result = next((r for r in self.model_info['backtest_results'] if r['school'] == school), None)
+                if school_result:
+                    if school_result['mape'] < 0.05:  # Very accurate school
+                        confidence = 90
+                    elif school_result['mape'] < 0.1:  # Accurate school
+                        confidence = 80
+                    elif school_result['mape'] > 0.2:  # Less accurate school
+                        confidence = 60
+            
+            confidence_level = 'high' if confidence >= 80 else 'medium' if confidence >= 60 else 'low'
+            
+            return {
+                'prediction': prediction,
+                'confidence': confidence,
+                'confidence_level': confidence_level,
+                'data_quality': 50,
+                'actual_data_points': 0,
+                'timestamp': datetime.now().isoformat(),
+                'school': school,
+                'date': tomorrow.strftime('%Y-%m-%d'),
+                'status': 'success'
+            }
+            
+        except Exception as e:
+            return {
+                'prediction': 0,
+                'confidence': 0,
+                'confidence_level': 'error',
+                'data_quality': 0,
+                'actual_data_points': 0,
+                'timestamp': datetime.now().isoformat(),
+                'school': school,
+                'date': tomorrow.strftime('%Y-%m-%d'),
+                'status': 'error',
+                'message': f'Prediction failed: {str(e)}'
+            }
+
+# ========== INTEGRATE XGBOOST PREDICTOR ==========
+
+print("\n" + "="*60)
+print("🤖 CREATING XGBOOST REAL-TIME PREDICTOR")
+print("="*60)
+
+# Create the XGBoost predictor
+print("🔄 Initializing XGBoost real-time predictor...")
+realtime_predictor = RealTimeMealPredictor(model, model_info)
+
+print("✅ XGBoost real-time predictor created successfully!")
+
+# Test the predictor
+print("🧪 Testing XGBoost prediction...")
+test_school = list(model_info['school_encoding'].keys())[0]
+
+test_result = realtime_predictor.predict_tomorrow(
+    school=test_school,
+    today_meals=500,
+    today_menu="Regular",
+    last_week_meals=480,
+    menu="Regular"
+)
+
+print(f"✅ XGBoost test prediction for {test_school}:")
+print(f"   - Prediction: {test_result['prediction']} meals")
+print(f"   - Confidence: {test_result['confidence']:.0f}%")
+print(f"   - Status: {test_result['status']}")
+
+# Update model info
+model_info['realtime_predictor_class'] = 'RealTimeMealPredictor'
+model_info['model_type'] = 'xgboost'
+
+# Save XGBoost models
+joblib.dump(model, 'xgboost_time_series_model.joblib')
+joblib.dump(model_info, 'xgboost_time_series_model_info.joblib')
+
+print("\n🎉 XGBOOST REAL-TIME PREDICTOR READY!")
+print("💾 XGBoost models saved successfully")
+
+print(f"\n📊 XGBoost Training Summary:")
+print(f"   - Records: {len(model_data)}")
+print(f"   - Schools: {len(school_encoding)}")
+print(f"   - Test MAE: {test_mae:.2f} meals")
+print(f"   - Test MAPE: {test_mape:.1%}")
+
+print(f"\n🚀 Ready for XGBoost predictions!")
+print("   Run: streamlit run app.py")
