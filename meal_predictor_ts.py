@@ -19,7 +19,8 @@ import json
 try:
     from dotenv import load_dotenv
     # Load environment variables
-    load_dotenv('meal.env')
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'meal.env')
+    load_dotenv(env_path)
 except ImportError:
     print("⚠️ python-dotenv not found. Environment variables must be set manually.")
 
