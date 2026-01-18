@@ -23,67 +23,39 @@ try:
 except ImportError:
     print("⚠️ python-dotenv not found. Environment variables must be set manually.")
 
-# --- Google Form Integration Helpers ---
+# --- Google Apps Script Integration ---
 
-def parse_prefilled_url(url):
-    """Parse a Google Form pre-filled URL to extract entry IDs."""
-    try:
-        parsed = urllib.parse.urlparse(url)
-        params = urllib.parse.parse_qs(parsed.query)
-        
-        # Look for entry IDs
-        entries = {}
-        for key, value in params.items():
-            if key.startswith('entry.'):
-                # We need to map values to logical names
-                # This is a bit tricky, we'll try to guess based on the value in the URL
-                # The user should assume the order: School, Date, Meals, Menu, Confidence
-                val_str = value[0] if isinstance(value, list) else value
-                entries[key] = val_str
-                
-        # Return the raw text matching for the UI to confirm
-        return params
-    except Exception as e:
-        return None
-
-def submit_to_google_form(form_url, entries_map, data):
+def submit_to_apps_script(script_url, data):
     """
-    Submit data to Google Form.
-    form_url: The 'formResponse' URL (derived from viewform URL)
-    entries_map: Dict mapping logical keys ('school', 'date', etc.) to 'entry.XXXX' IDs
-    data: Dict containing actual values to submit
+    Submit data to Google Apps Script Web App.
     """
     try:
-        submission_data = {}
-        for logical_key, entry_id in entries_map.items():
-            if logical_key in data:
-                submission_data[entry_id] = data[logical_key]
-        
-        # Ensure we are posting to formResponse, not viewform
-        post_url = form_url.replace('viewform', 'formResponse')
-        if 'usp=pp_url' in post_url:
-            post_url = post_url.split('?')[0]
+        if not script_url:
+            return False
             
-        print(f"Submitting to {post_url} with data: {submission_data}")
-        response = requests.post(post_url, data=submission_data)
-        return response.status_code == 200
+        print(f"Submitting to {script_url} with data: {data}")
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(script_url, json=data, headers=headers)
+        
+        # Apps Script returns 200 on success usually, sometimes 302 redirect
+        return response.status_code in [200, 302]
     except Exception as e:
-        print(f"Error submitting form: {e}")
+        print(f"Error submitting to script: {e}")
         return False
         
-def load_form_config():
-    """Load form configuration from JSON file"""
+def load_config():
+    """Load configuration from JSON file"""
     try:
-        if os.path.exists('form_config.json'):
-            with open('form_config.json', 'r') as f:
+        if os.path.exists('config.json'):
+            with open('config.json', 'r') as f:
                 return json.load(f)
     except:
         pass
-    return None
+    return {}
 
-def save_form_config(config):
-    """Save form configuration to JSON file"""
-    with open('form_config.json', 'w') as f:
+def save_config(config):
+    """Save configuration to JSON file"""
+    with open('config.json', 'w') as f:
         json.dump(config, f)
 
 
@@ -498,102 +470,61 @@ def main():
                         st.markdown(f"**Answer:** {answer}")
 
 
-    # --- Google Sheet / Form Configuration (Sidebar) ---
+    # --- Google Sheet Configuration (Sidebar) ---
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        with st.expander("📝 Link Google Sheet"):
+        with st.expander("📝 Connect to Google Sheets"):
             st.markdown("""
-            **To save predictions:**
-            1. Create a Google Form linked to your Sheet.
-            2. Add questions: **School**, **Date**, **Predicted Meals**, **Menu**, **Confidence**.
-            3. Click **⋮ > Get pre-filled link**.
-            4. Fill dummy data (e.g. "SCHOOL", "2025-01-01", "0", "MENU", "High").
-            5. Click **Get Link**, copy it, and paste here:
+            **One-time Setup:**
+            1. Go to your Google Sheet.
+            2. **Extensions** > **Apps Script**.
+            3. Paste the provided script code.
+            4. **Deploy** > **New deployment** > **Web app**.
+            5. Set **Who has access** to **Anyone**.
+            6. Paste the **Web App URL** below:
             """)
             
-            prefilled_link = st.text_input("Paste Pre-filled Link Here")
+            current_config = load_config()
+            default_url = current_config.get('script_url', '')
             
-            if st.button("Save Configuration"):
-                if prefilled_link:
-                    parsed = urllib.parse.urlparse(prefilled_link)
-                    params = urllib.parse.parse_qs(parsed.query)
-                    
-                    # Extract entry IDs
-                    config = {'form_url': prefilled_link.split('?')[0]}
-                    entries = {}
-                    
-                    # Heuristic mapping based on common user behavior (order of params in string might vary)
-                    # We rely on the user to check mapping
-                    
-                    found_entries = [k for k in params.keys() if k.startswith('entry.')]
-                    if len(found_entries) >= 3:
-                        st.success(f"Found {len(found_entries)} fields!")
-                        
-                        # Let user map them manually to be safe
-                        st.write("Please map the fields:")
-                        
-                        # We save the raw entries to session state to map in next step
-                        st.session_state.temp_entries = found_entries
-                        st.session_state.temp_params = params
-                        st.session_state.form_url_base = prefilled_link.split('?')[0]
-                        
-                    else:
-                        st.error("Could not find enough 'entry.XXXX' fields. Did you use the 'Get pre-filled link' option?")
+            script_url = st.text_input("Apps Script Web App URL", value=default_url)
             
-            # Mapping UI (if entries found)
-            if 'temp_entries' in st.session_state:
-                entries_config = {}
-                st.caption(f"Detected values: {st.session_state.temp_params}")
-                
-                entries_config['school'] = st.selectbox("Field for 'School'", st.session_state.temp_entries, index=0)
-                entries_config['date'] = st.selectbox("Field for 'Date'", st.session_state.temp_entries, index=min(1, len(st.session_state.temp_entries)-1))
-                entries_config['prediction'] = st.selectbox("Field for 'Predicted Meals'", st.session_state.temp_entries, index=min(2, len(st.session_state.temp_entries)-1))
-                entries_config['menu'] = st.selectbox("Field for 'Menu'", st.session_state.temp_entries, index=min(3, len(st.session_state.temp_entries)-1))
-                entries_config['confidence'] = st.selectbox("Field for 'Confidence' (Optional)", st.session_state.temp_entries + ['None'], index=min(4, len(st.session_state.temp_entries)-1) if len(st.session_state.temp_entries)>4 else 0)
-                
-                if st.button("Confirm & Save"):
-                    final_config = {
-                        'form_url': st.session_state.form_url_base,
-                        'mapping': entries_config
-                    }
-                    save_form_config(final_config)
-                    st.success("✅ Configuration saved!")
-                    # Clear temp state
-                    del st.session_state.temp_entries
+            if st.button("Save URL"):
+                if script_url:
+                    save_config({'script_url': script_url})
+                    st.success("✅ URL saved!")
+                else:
+                    st.error("Please enter a URL")
 
     # --- Save to Google Sheet Logic ---
     if st.session_state.prediction_result:
-        config = load_form_config()
-        
-        # Check if we already saved this specific prediction to ANY sheet (hacky, checking session_state)
-        # Better: UI button
+        config = load_config()
         
         col_save, _ = st.columns([1, 3])
         with col_save:
-            if config:
-                if st.button("💾 Save to Google Sheet"):
+            if config.get('script_url'):
+                if st.button("💾 Save to 'Predictions' Sheet"):
                     with st.spinner("Saving..."):
                         res = st.session_state.prediction_result
                         
                         # Prepare data
+                        confidence_level = "Medium"
+                        if res['school_patterns']:
+                             mape = res['school_patterns']['mape']
+                             if mape < 0.1: confidence_level = "High"
+                             elif mape < 0.2: confidence_level = "Medium"
+                             else: confidence_level = "Low"
+                        
                         save_data = {
                             'school': res['inputs']['school'],
                             'date': tomorrow_date.strftime('%Y-%m-%d'),
-                            'prediction': str(int(res['prediction'])),
+                            'prediction': int(res['prediction']),
                             'menu': res['inputs']['tomorrow_menu'],
-                            'confidence': "High" # Logic to be refined
+                            'confidence': confidence_level
                         }
                         
-                        # Add confidence actual value
-                        if res['school_patterns']:
-                             mape = res['school_patterns']['mape']
-                             if mape < 0.1: conf = "High"
-                             elif mape < 0.2: conf = "Medium"
-                             else: conf = "Low"
-                             save_data['confidence'] = conf
-                        
-                        success = submit_to_google_form(config['form_url'], config['mapping'], save_data)
+                        success = submit_to_apps_script(config['script_url'], save_data)
                         
                         if success:
                             st.success("✅ Saved to Google Sheet!")
