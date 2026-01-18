@@ -366,6 +366,36 @@ def main():
                 'timestamp': datetime.now()
             }
             
+            # --- AUTO-SAVE TO GOOGLE SHEET ---
+            config = load_config()
+            if config.get('script_url'):
+                with st.spinner("💾 Saving prediction to Google Sheet..."):
+                    # Prepare data
+                    confidence_level = "Medium"
+                    if school_patterns:
+                         mape = school_patterns['mape']
+                         if mape < 0.1: confidence_level = "High"
+                         elif mape < 0.2: confidence_level = "Medium"
+                         else: confidence_level = "Low"
+                    
+                    save_data = {
+                        'school': selected_school,
+                        'date': tomorrow_date.strftime('%Y-%m-%d'),
+                        'prediction': int(prediction),
+                        'menu': tomorrow_menu,
+                        'confidence': confidence_level
+                    }
+                    
+                    success = submit_to_apps_script(config['script_url'], save_data)
+                    
+                    if success:
+                        st.toast("✅ Prediction saved to Google Sheet!", icon="📝")
+                    else:
+                        st.error("❌ Failed to auto-save to Google Sheet. Please check the connection.")
+            else:
+                st.warning("⚠️ Prediction NOT saved: Google Sheet not connected. Please configure it in Settings.")
+
+            
         except Exception as e:
             st.error(f"❌ Prediction error: {e}")
             st.info("💡 Make sure all required fields are filled correctly")
@@ -373,165 +403,7 @@ def main():
     # Display Results (Outside Form)
     if st.session_state.prediction_result:
         res = st.session_state.prediction_result
-        prediction = res['prediction']
-        inputs = res['inputs']
-        school_patterns = res['school_patterns']
-        
-        st.divider()
-        st.success("🎯 Prediction Complete!")
-        
-        # Results in columns
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            change_pct = ((prediction - inputs['today_meals']) / inputs['today_meals'] * 100) if inputs['today_meals'] > 0 else 0
-            st.metric(
-                "Tomorrow's Predicted Meals",
-                f"{int(prediction):,}",
-                f"{change_pct:+.1f}% from today"
-            )
-        
-        with col2:
-            st.metric("Today's Meals", f"{inputs['today_meals']:,}")
-        
-        with col3:
-            if school_patterns:
-                st.metric("School Average", f"{school_patterns['avg_meals']:.0f}")
-            elif inputs['last_week_same_day_meals'] > 0:
-                st.metric("Last Week Same Day", f"{inputs['last_week_same_day_meals']:,}")
-        
-        # Explanation section
-        st.header("📈 Prediction Insights")
-        explanations = generate_explanation(prediction, inputs, model_info, school_patterns)
-        
-        for explanation in explanations:
-            st.write(f"• {explanation}")
-        
-        # Actionable recommendations
-        st.header("💡 Recommended Actions")
-        
-        if prediction > inputs['today_meals'] * 1.15:
-            st.warning("""
-            **Prepare for increased demand:**
-            - Increase ingredient preparation by 15-20%
-            - Ensure adequate staffing
-            - Check inventory levels
-            """)
-        elif prediction < inputs['today_meals'] * 0.85:
-            st.info("""
-            **Expected lower demand:**
-            - Standard preparation sufficient
-            - Monitor for last-minute changes
-            - Consider food preservation options
-            """)
-        else:
-            st.success("""
-            **Stable demand expected:**
-            - Continue with normal preparation
-            - Maintain current staffing levels
-            - Standard operating procedures apply
-            """)
-        
-        # Confidence indicator
-        if school_patterns:
-            error_rate = school_patterns['mape']
-            if error_rate < 0.1:
-                confidence = "High"
-                color = "green"
-            elif error_rate < 0.2:
-                confidence = "Medium"
-                color = "orange"
-            else:
-                confidence = "Low"
-                color = "red"
-            
-            st.info(f"**Confidence Level**: :{color}[{confidence}] (Based on historical accuracy for {inputs['school']})")
-        
-        # AI Insights Section
-        st.markdown("---")
-        st.subheader("🤖 AI Insights")
-        
-        if not AI_AVAILABLE:
-            st.warning("⚠️ AI features are disabled because the `google-generativeai` library is missing.")
-            st.info("Try running `pip install google-generativeai` or use `run_app.bat`.")
-        elif not GOOGLE_API_KEY:
-            st.warning("⚠️ to enable AI insights, please add GOOGLE_API_KEY to meal.env")
-        else:
-            if st.button("Generate Detailed Explanation"):
-                with st.spinner("Analyzing prediction factors..."):
-                    explanation = get_ai_explanation(prediction, inputs, model_info, school_patterns)
-                    st.markdown(explanation)
-            
-            # Q&A Interface
-            user_question = st.text_input("💬 Ask about this prediction:", placeholder="e.g., Why is this higher than last week?")
-            if user_question:
-                    with st.spinner("Thinking..."):
-                        answer = get_ai_explanation(prediction, inputs, model_info, school_patterns, user_question)
-                        st.markdown(f"**Answer:** {answer}")
 
-
-    # --- Google Sheet Configuration (Sidebar) ---
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        
-        with st.expander("📝 Connect to Google Sheets"):
-            st.markdown("""
-            **One-time Setup:**
-            1. Go to your Google Sheet.
-            2. **Extensions** > **Apps Script**.
-            3. Paste the provided script code.
-            4. **Deploy** > **New deployment** > **Web app**.
-            5. Set **Who has access** to **Anyone**.
-            6. Paste the **Web App URL** below:
-            """)
-            
-            current_config = load_config()
-            default_url = current_config.get('script_url', '')
-            
-            script_url = st.text_input("Apps Script Web App URL", value=default_url)
-            
-            if st.button("Save URL"):
-                if script_url:
-                    save_config({'script_url': script_url})
-                    st.success("✅ URL saved!")
-                else:
-                    st.error("Please enter a URL")
-
-    # --- Save to Google Sheet Logic ---
-    if st.session_state.prediction_result:
-        config = load_config()
-        
-        col_save, _ = st.columns([1, 3])
-        with col_save:
-            if config.get('script_url'):
-                if st.button("💾 Save to 'Predictions' Sheet"):
-                    with st.spinner("Saving..."):
-                        res = st.session_state.prediction_result
-                        
-                        # Prepare data
-                        confidence_level = "Medium"
-                        if res['school_patterns']:
-                             mape = res['school_patterns']['mape']
-                             if mape < 0.1: confidence_level = "High"
-                             elif mape < 0.2: confidence_level = "Medium"
-                             else: confidence_level = "Low"
-                        
-                        save_data = {
-                            'school': res['inputs']['school'],
-                            'date': tomorrow_date.strftime('%Y-%m-%d'),
-                            'prediction': int(res['prediction']),
-                            'menu': res['inputs']['tomorrow_menu'],
-                            'confidence': confidence_level
-                        }
-                        
-                        success = submit_to_apps_script(config['script_url'], save_data)
-                        
-                        if success:
-                            st.success("✅ Saved to Google Sheet!")
-                        else:
-                            st.error("❌ Failed to save. Check URL.")
-            else:
-                st.info("ℹ️ Configure Google Sheet in sidebar to save results.")
 
     # Additional information
     with st.expander("ℹ️ How It Works"):
